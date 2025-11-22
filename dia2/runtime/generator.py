@@ -186,6 +186,77 @@ def _execute_depformer_stage(
     generation.depformer_cache = dep_present
 
 
+def _execute_transformer_graph(
+    runtime: RuntimeContext,
+    step_tokens: torch.Tensor,
+    positions_view: torch.Tensor,
+    branches: int,
+    generation: GenerationState,
+    transformer_step,
+    buffers: NetworkBuffers,
+    transformer_capture: Optional[Tuple[torch.cuda.CUDAGraph, torch.Tensor]],
+    dep_captures: Optional[list[dict]],
+) -> tuple[torch.cuda.CUDAGraph, torch.Tensor]:
+    if transformer_capture is None:
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            hidden_ref = _execute_transformer_step(
+                step_tokens,
+                positions_view,
+                generation,
+                transformer_step,
+                buffers,
+            )
+        transformer_capture = (graph, hidden_ref)
+        if runtime.model.depformer.num_depth > 0:
+            dep_captures = []
+            for idx in range(runtime.model.depformer.num_depth):
+                capture = {
+                    "graph": torch.cuda.CUDAGraph(),
+                    "captured": False,
+                    "prev_audio": torch.empty((branches,), dtype=torch.long, device=runtime.device),
+                    "main_tokens": torch.empty((branches,), dtype=torch.long, device=runtime.device) if idx == 0 else None,
+                    "second_tokens": torch.empty((branches,), dtype=torch.long, device=runtime.device) if idx == 0 else None,
+                }
+                dep_captures.append(capture)
+    else:
+        transformer_capture[0].replay()
+    return transformer_capture, dep_captures
+
+def _execute_depformer_graph(
+    stage: int,
+    prev_audio: torch.Tensor,
+    hidden_t: torch.Tensor,
+    generation: GenerationState,
+    depformer_step,
+    main_tokens: Optional[torch.Tensor],
+    aux_tokens: Optional[torch.Tensor],
+    buffers: NetworkBuffers,
+    capture: dict[str, torch.Tensor | torch.cuda.CUDAGraph | bool],
+) -> dict[str, torch.Tensor | torch.cuda.CUDAGraph | bool]:
+    capture["prev_audio"].copy_(prev_audio)
+    if capture["main_tokens"] is not None and stage == 0:
+        capture["main_tokens"].copy_(main_tokens)
+        capture["second_tokens"].copy_(aux_tokens)
+    if not capture["captured"]:
+        torch.cuda.synchronize()
+        with torch.cuda.graph(capture["graph"]):
+            _execute_depformer_stage(
+                stage_index=stage,
+                prev_audio=capture["prev_audio"],
+                hidden_t=hidden_t,
+                generation=generation,
+                depformer_step=depformer_step,
+                main_tokens=capture["main_tokens"],
+                second_tokens=capture["second_tokens"],
+                buffers=buffers,
+            )
+        capture["captured"] = True
+    else:
+        capture["graph"].replay()
+
+    return capture
 
 
 def run_generation_loop(
@@ -239,31 +310,17 @@ def run_generation_loop(
                 step_tokens[1:, 0, 0] = token_ids.zero
                 step_tokens[1:, 1, 0] = token_ids.pad
             if use_graph:
-                if transformer_capture is None:
-                    torch.cuda.synchronize()
-                    graph = torch.cuda.CUDAGraph()
-                    with torch.cuda.graph(graph):
-                        hidden_ref = _execute_transformer_step(
-                            step_tokens,
-                            positions_view,
-                            generation,
-                            transformer_step,
-                            buffers,
-                        )
-                    transformer_capture = (graph, hidden_ref)
-                    if runtime.model.depformer.num_depth > 0:
-                        dep_captures = []
-                        for idx in range(runtime.model.depformer.num_depth):
-                            capture = {
-                                "graph": torch.cuda.CUDAGraph(),
-                                "captured": False,
-                                "prev_audio": torch.empty((branches,), dtype=torch.long, device=runtime.device),
-                                "main_tokens": torch.empty((branches,), dtype=torch.long, device=runtime.device) if idx == 0 else None,
-                                "second_tokens": torch.empty((branches,), dtype=torch.long, device=runtime.device) if idx == 0 else None,
-                            }
-                            dep_captures.append(capture)
-                else:
-                    transformer_capture[0].replay()
+                transformer_capture, dep_captures = _execute_transformer_graph(
+                    runtime=runtime,
+                    step_tokens=step_tokens,
+                    positions_view=positions_view,
+                    branches=branches,
+                    generation=generation,
+                    transformer_step=transformer_step,
+                    buffers=buffers,
+                    transformer_capture=transformer_capture,
+                    dep_captures=dep_captures,
+                )
                 hidden_t = transformer_capture[1]
             else:
                 hidden_t = _execute_transformer_step(
@@ -302,27 +359,18 @@ def run_generation_loop(
             aux_tokens.fill_(second_token)
             for stage in range(runtime.model.depformer.num_depth):
                 if use_graph and dep_captures is not None:
-                    capture = dep_captures[stage]
-                    capture["prev_audio"].copy_(prev_audio)
-                    if capture["main_tokens"] is not None and stage == 0:
-                        capture["main_tokens"].copy_(main_tokens)
-                        capture["second_tokens"].copy_(aux_tokens)
-                    if not capture["captured"]:
-                        torch.cuda.synchronize()
-                        with torch.cuda.graph(capture["graph"]):
-                            _execute_depformer_stage(
-                                stage_index=stage,
-                                prev_audio=capture["prev_audio"],
-                                hidden_t=hidden_t,
-                                generation=generation,
-                                depformer_step=depformer_step,
-                                main_tokens=capture["main_tokens"],
-                                second_tokens=capture["second_tokens"],
-                                buffers=buffers,
-                            )
-                        capture["captured"] = True
-                    else:
-                        capture["graph"].replay()
+                    dep_captures[stage] = _execute_depformer_graph(
+                        stage=stage,
+                        prev_audio=prev_audio,
+                        hidden_t=hidden_t,
+                        generation=generation,
+                        depformer_step=depformer_step,
+                        main_tokens=main_tokens,
+                        aux_tokens=aux_tokens,
+                        buffers=buffers,
+                        capture=dep_captures[stage],
+                    )
+
                 else:
                     _execute_depformer_stage(
                         stage_index=stage,
