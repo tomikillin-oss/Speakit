@@ -94,9 +94,7 @@ class Attention(nn.Module):
         eps = config.model.normalization_layer_epsilon
         self.q_norm = nn.RMSNorm(self.head_dim, eps=eps, dtype=torch.float32, device=device)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=eps, dtype=torch.float32, device=device)
-        
-        # Pre-calculate RoPE for the full context + small buffer
-        rope_len = config.runtime.max_context_steps + 256
+        rope_len = config.runtime.max_context_steps
         self.rotary = RotaryEmbedding(
             self.head_dim,
             config.model.rope_min_timescale,
