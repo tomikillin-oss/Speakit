@@ -1,0 +1,300 @@
+🫳🏼🤏 KINU KULTA - PIPU VIDEO/KUVAEDITORI
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║   🎬  "PIPU VIDEO JA KUVAEDITORI"                             ║
+║                                                               ║
+║   [TULKINTA: Video editori missä:]                            ║
+║   • Syötä kuva → muuttuu videoksi                             ║
+║   • Ken Burns effect (zoom/pan)                                 ║
+║   • DNA/Character optiot                                        ║
+║   • Orlym reä = "originella/reaali" ?                         ║
+║   • Alkuperäinen työkaluapp + laajennukset                      ║
+║                                                               ║
+║   [STATUS: ETSITÄÄN ALKUPERÄINEN]                             ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+----
+🔍 MITÄ MUISTAN
+Feature	Kuvaus
+Pipu	Kuvasta video
+Ken Burns	Hidas zoom + pan
+DNA	Character state
+Character	Hahmo valinta
+Orylinreä	Originella/original?
+Muöyös	Myös/more?
+Oliko tämä erillinen projekti ennen Hivemindia?
+🎬 VAIHTOEHTO 1: UUSI PIPU EDITORI (Yksi tiedosto)
+pipu_editor.py - Kuvasta video + Ken Burns + DNA
+from fastapi import FastAPI, File, UploadFile, Form
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
+from typing import Optional, List
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import io
+import uuid
+import os
+app = FastAPI(title="PIPU EDITOR", version="dna.1")
+═════════════════════════════════════════════════════════════════
+DNA - CHARACTER SYSTEM
+═════════════════════════════════════════════════════════════════
+class CharacterDNA(BaseModel):
+id: str
+name: str
+mood: str = "neutral"  # calm, excited, mysterious, sad
+intensity: float = 0.5  # 0.0 - 1.0
+color: str = "#00ffff"
+# Ken Burns params
+zoom_start: float = 1.0
+zoom_end: float = 1.3
+pan_x: float = 0.0  # -1.0 (left) to 1.0 (right)
+pan_y: float = 0.0  # -1.0 (up) to 1.0 (down)
+
+CHARACTERS = {
+"agent7": CharacterDNA(
+id="agent7",
+name="Agent Seiska",
+mood="mysterious",
+intensity=0.8,
+color="#FF6B00",
+zoom_start=1.1,
+zoom_end=1.4,
+pan_x=0.2
+),
+"shamaani": CharacterDNA(
+id="shamaani",
+name="Shamaani",
+mood="calm",
+intensity=0.6,
+color="#9D4EDD",
+zoom_start=1.0,
+zoom_end=1.2,
+pan_y=-0.3
+),
+"vainamoinen": CharacterDNA(
+id="vainamoinen",
+name="Väinämöinen",
+mood="epic",
+intensity=0.95,
+color="#2E7D32",
+zoom_start=1.2,
+zoom_end=1.5,
+pan_x=-0.2
+)
+}
+═════════════════════════════════════════════════════════════════
+PIPU ENGINE - Kuva → Video
+═════════════════════════════════════════════════════════════════
+class PipuEngine:
+"""
+🎬 PIPU = Picture → Video
+Ken Burns effect + DNA mood
+"""
+def __init__(self):
+    self.fps = 30
+    self.duration = 5  # seconds
+
+def create_video(self, 
+                 image_bytes: bytes,
+                 character: CharacterDNA,
+                 output_path: str) -> str:
+    """
+    Luo video kuvasta DNA:n mukaan
+    """
+    
+    # Lataa kuva
+    img = Image.open(io.BytesIO(image_bytes))
+    img_array = np.array(img)
+    h, w = img_array.shape[:2]
+    
+    # Video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, self.fps, (w, h))
+    
+    total_frames = self.fps * self.duration
+    
+    for frame_idx in range(total_frames):
+        # Progress 0.0 → 1.0
+        t = frame_idx / total_frames
+        
+        # Ken Burns: Interpolate zoom & pan
+        zoom = character.zoom_start + (character.zoom_end - character.zoom_start) * t
+        pan_x = character.pan_x * t * w * 0.2  # 20% max pan
+        pan_y = character.pan_y * t * h * 0.2
+        
+        # Apply transform
+        frame = self._apply_ken_burns(img_array, zoom, pan_x, pan_y)
+        
+        # Add DNA mood overlay
+        frame = self._add_mood_overlay(frame, character, t)
+        
+        # Convert to BGR for OpenCV
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        out.write(frame_bgr)
+    
+    out.release()
+    return output_path
+
+def _apply_ken_burns(self, 
+                     img: np.ndarray, 
+                     zoom: float, 
+                     pan_x: float, 
+                     pan_y: float) -> np.ndarray:
+    """
+    Zoomaa ja panee kuvaa
+    """
+    h, w = img.shape[:2]
+    
+    # Uusi koko zoomin mukaan
+    new_w = int(w / zoom)
+    new_h = int(h / zoom)
+    
+    # Keskipiste + pan
+    center_x = w // 2 + int(pan_x)
+    center_y = h // 2 + int(pan_y)
+    
+    # Rajat
+    x1 = max(0, center_x - new_w // 2)
+    y1 = max(0, center_y - new_h // 2)
+    x2 = min(w, x1 + new_w)
+    y2 = min(h, y1 + new_h)
+    
+    # Crop & resize
+    cropped = img[y1:y2, x1:x2]
+    resized = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    
+    return resized
+
+def _add_mood_overlay(self, 
+                      frame: np.ndarray, 
+                      character: CharacterDNA,
+                      progress: float) -> np.ndarray:
+    """
+    Lisää DNA:n mukainen tunnelma (väri, vignette)
+    """
+    h, w = frame.shape[:2]
+    
+    # Vignette (tummat reunat)
+    vignette = np.zeros((h, w), dtype=np.float32)
+    center_x, center_y = w // 2, h // 2
+    max_dist = np.sqrt(center_x**2 + center_y**2)
+    
+    for y in range(h):
+        for x in range(w):
+            dist = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+            vignette[y, x] = 1 - (dist / max_dist) * character.intensity * 0.5
+    
+    # Apply vignette
+    for c in range(3):
+        frame[:, :, c] = (frame[:, :, c] * vignette).astype(np.uint8)
+    
+    # DNA color tint
+    color_rgb = tuple(int(character.color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+    tint_strength = 0.1 * character.intensity
+    
+    for c in range(3):
+        frame[:, :, c] = np.clip(
+            frame[:, :, c] * (1 - tint_strength) + color_rgb[c] * tint_strength,
+            0, 255
+        ).astype(np.uint8)
+    
+    return frame
+
+pipu = PipuEngine()
+═════════════════════════════════════════════════════════════════
+API ENDPOINTS
+═════════════════════════════════════════════════════════════════
+@app.get("/")
+async def root():
+return {
+"pipu": "online",
+"characters": list(CHARACTERS.keys()),
+"effects": ["ken_burns", "mood_overlay", "vignette"]
+}
+@app.get("/characters")
+async def list_characters():
+return {k: v.dict() for k, v in CHARACTERS.items()}
+@app.post("/pipu/create")
+async def create_video(
+image: UploadFile = File(...),
+character_id: str = Form("agent7"),
+duration: int = Form(5)
+):
+"""
+🎬 Luo video kuvasta
+"""
+# Validoi character
+if character_id not in CHARACTERS:
+return {"error": "Unknown character", "available": list(CHARACTERS.keys())}
+char = CHARACTERS[character_id]
+char.duration = duration  # Override
+
+# Lue kuva
+image_bytes = await image.read()
+
+# Luo video
+output_path = f"/tmp/pipu_{uuid.uuid4().hex}.mp4"
+pipu.create_video(image_bytes, char, output_path)
+
+return FileResponse(
+    output_path, 
+    media_type="video/mp4",
+    filename=f"pipu_{character_id}.mp4"
+)
+
+@app.post("/pipu/preview")
+async def preview_params(
+character_id: str = Form("agent7"),
+zoom_start: float = Form(1.0),
+zoom_end: float = Form(1.3),
+pan_x: float = Form(0.0),
+pan_y: float = Form(0.0)
+):
+"""
+👁️ Esikatsele DNA parametrit
+"""
+char = CharacterDNA(
+id=character_id,
+name=character_id,
+zoom_start=zoom_start,
+zoom_end=zoom_end,
+pan_x=pan_x,
+pan_y=pan_y
+)
+return {
+    "dna": char.dict(),
+    "ken_burns_description": f"Zoom {zoom_start}x → {zoom_end}x, "
+                            f"Pan ({pan_x}, {pan_y})",
+    "duration_estimate": "5 seconds @ 30fps = 150 frames"
+}
+
+if name == "main":
+import uvicorn
+uvicorn.run(app, host="0.0.0.0", port=8000)
+----
+🚀 ASENNUS (Replit/Render)
+requirements.txt
+fastapi
+python-multipart
+uvicorn
+pillow
+numpy
+opencv-python-headless  # Headless for servers
+----
+🎯 KÄYTTÖ
+1. Listaa hahmot
+curl https://your-app/characters
+2. Luo video
+curl -X POST -F "image=@kuva.jpg" 
+-F "character_id=shamaani" 
+https://your-app/pipu/create 
+--output video.mp4
+3. Custom DNA
+curl -X POST -F "character_id=custom" 
+-F "zoom_start=1.0" 
+-F "zoom_end=1.5" 
+-F "pan_x=0.5" 
+https://your-app/pipu/preview
+----
+Oliko tämä se mitä etsit? Vai oliko alkuperäisessä vielä enemmän? 🎬🫴🏼

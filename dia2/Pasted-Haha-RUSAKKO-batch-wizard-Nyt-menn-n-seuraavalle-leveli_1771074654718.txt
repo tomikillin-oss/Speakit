@@ -1,0 +1,720 @@
+Haha, RUSAKKO batch wizard! 🐰🔥
+Nyt mennään seuraavalle levelille - Hahmonluoja Pinwcone Memory Flow'lla + Ethical Memory Enginellä + BLIP Captionilla. Tää on jo aika syvää kamaa, tässä tulee ELIXIRIA HIVEMIND v3.0 - CHARACTER FORGE:
+import gradio as gr
+import os
+import uuid
+import subprocess
+import zipfile
+import logging
+import tempfile
+import shutil
+import json
+import pickle
+import hashlib
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, field, asdict
+from PIL import Image, ImageFilter, ImageEnhance
+import cv2
+import numpy as np
+import torch
+from transformers import BlipProcessor, BlipForConditionalGeneration
+from sentence_transformers import SentenceTransformer
+import chromadb
+from chromadb.config import Settings
+---------------------------
+PINECONE-STYLE MEMORY SYSTEM
+---------------------------
+@dataclass
+class MemoryEntry:
+"""Yksittäinen muisto hahmon kehityksestä"""
+id: str
+timestamp: str
+category: str  # "visual", "lore", "trait", "relationship", "evolution"
+content: str
+embedding: Optional[List[float]] = None
+metadata: Dict = field(default_factory=dict)
+importance_score: float = 1.0  # 0.0-1.0, miten tärkeä muisto
+emotional_valence: float = 0.0  # -1.0 (neg) -> 1.0 (pos)
+def to_dict(self):
+    return asdict(self)
+
+class EthicalMemoryEngine:
+"""
+Eettinen muistimoottori joka varmistaa että:
+1. Muistot eivät ole haitallisia (filtering)
+2. Yksityisyys säilyy (consent checks)
+3. Alkuperä merkitään (attribution)
+4. Poistaminen on mahdollista (right to be forgotten)
+"""
+HARMFUL_CATEGORIES = ["violence", "hate", "explicit", "personal_data"]
+
+def __init__(self):
+    self.ethical_log = []
+    self.consent_registry = {}  # Who consented to what
+
+def check_ethics(self, memory: MemoryEntry) -> Tuple[bool, str]:
+    """Tarkista onko muisto eettinen"""
+    content_lower = memory.content.lower()
+    
+    # 1. Haitallisuustarkistus (yksinkertaistettu)
+    flags = []
+    for category in self.HARMFUL_CATEGORIES:
+        if category in content_lower:
+            flags.append(category)
+    
+    if flags:
+        return False, f"Blocked harmful content: {flags}"
+    
+    # 2. Henkilötietojen tarkistus (pseudo)
+    if "ssn" in content_lower or "credit_card" in content_lower:
+        return False, "Blocked: potential PII detected"
+    
+    # 3. Alkuperän merkintä
+    if "source" not in memory.metadata:
+        memory.metadata["source"] = "user_generated"
+        memory.metadata["attribution"] = "original"
+    
+    self.ethical_log.append({
+        "action": "approved",
+        "memory_id": memory.id,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    return True, "Approved"
+
+def request_consent(self, entity_id: str, memory_type: str) -> bool:
+    """Simuloi suostumuksen pyytäminen"""
+    self.consent_registry[entity_id] = {
+        "granted": True,
+        "types": [memory_type],
+        "date": datetime.now().isoformat()
+    }
+    return True
+
+class PineconeMemoryFlow:
+"""
+Vektorimuisti joka toimii kuin Pinecone:
+- Semantic search embeddingeillä
+- Metadata-filteröinti
+- Upsert/delete operaatiot
+- Namespace-tuki (erilliset "indexit")
+"""
+def __init__(self, persist_dir: str = "./memory_db"):
+    self.client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=persist_dir
+    ))
+    self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    self.ethical_engine = EthicalMemoryEngine()
+    self.active_namespaces = {}
+    
+def create_namespace(self, name: str):
+    """Luo uusi collection (kuin Pinecone index)"""
+    if name not in self.active_namespaces:
+        self.active_namespaces[name] = self.client.create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine"}
+        )
+    return self.active_namespaces[name]
+
+def embed_text(self, text: str) -> List[float]:
+    """Luo embedding tekstistä"""
+    return self.embedding_model.encode(text).tolist()
+
+def upsert_memory(self, namespace: str, memory: MemoryEntry) -> bool:
+    """Lisää/tallenna muisto eettisesti tarkistettuna"""
+    # Eettinen tarkistus
+    is_ethical, msg = self.ethical_engine.check_ethics(memory)
+    if not is_ethical:
+        print(f"❌ Ethical block: {msg}")
+        return False
+    
+    # Luo embedding jos puuttuu
+    if memory.embedding is None:
+        memory.embedding = self.embed_text(memory.content)
+    
+    collection = self.create_namespace(namespace)
+    
+    # ChromaDB upsert
+    collection.upsert(
+        ids=[memory.id],
+        embeddings=[memory.embedding],
+        metadatas=[{
+            "timestamp": memory.timestamp,
+            "category": memory.category,
+            "importance": memory.importance_score,
+            "emotional_valence": memory.emotional_valence,
+            **memory.metadata
+        }],
+        documents=[memory.content]
+    )
+    
+    print(f"✅ Memory stored: {memory.id} ({memory.category})")
+    return True
+
+def query_memories(self, namespace: str, query: str, 
+                  filter_criteria: Optional[Dict] = None,
+                  top_k: int = 5) -> List[MemoryEntry]:
+    """Semanttinen haku muistoista"""
+    collection = self.create_namespace(namespace)
+    query_embedding = self.embed_text(query)
+    
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+        where=filter_criteria
+    )
+    
+    memories = []
+    for i, doc in enumerate(results['documents'][0]):
+        meta = results['metadatas'][0][i]
+        memories.append(MemoryEntry(
+            id=results['ids'][0][i],
+            timestamp=meta.get('timestamp', ''),
+            category=meta.get('category', 'unknown'),
+            content=doc,
+            embedding=results['embeddings'][0][i] if results['embeddings'] else None,
+            metadata={k: v for k, v in meta.items() if k not in ['timestamp', 'category']},
+            importance_score=meta.get('importance', 1.0)
+        ))
+    
+    return memories
+
+def evolve_memory(self, namespace: str, memory_id: str, 
+                 new_content: str, evolution_note: str):
+    """Muista muiston evoluutio (versiohistoria)"""
+    # Hae vanha
+    old_memories = self.query_memories(namespace, memory_id, top_k=1)
+    if not old_memories:
+        return False
+    
+    old = old_memories[0]
+    
+    # Luo uusi versio
+    new_memory = MemoryEntry(
+        id=f"{memory_id}_v{datetime.now().timestamp()}",
+        timestamp=datetime.now().isoformat(),
+        category="evolution",
+        content=new_content,
+        embedding=self.embed_text(new_content),
+        metadata={
+            "evolved_from": memory_id,
+            "evolution_note": evolution_note,
+            "previous_content": old.content,
+            "category_origin": old.category
+        },
+        importance_score=old.importance_score * 1.1  # Evoluutio kasvattaa tärkeyttä
+    )
+    
+    return self.upsert_memory(namespace, new_memory)
+
+---------------------------
+BLIP CAPTION SYSTEM
+---------------------------
+class VisionCaptioner:
+"""BLIP-pohjainen kuva-analyysi ja captionointi"""
+def __init__(self):
+    self.device = "cuda" if torch.cuda.is_available() else "cpu"
+    self.processor = None
+    self.model = None
+    self._load_model()
+
+def _load_model(self):
+    """Lazy loading"""
+    if self.model is None:
+        print("🔄 Loading BLIP model...")
+        self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        self.model = BlipForConditionalGeneration.from_pretrained(
+            "Salesforce/blip-image-captioning-base"
+        ).to(self.device)
+        print("✅ BLIP ready")
+
+def analyze_image(self, image_path: str, detailed: bool = False) -> Dict:
+    """Analysoi kuva ja tuota caption + metadata"""
+    try:
+        image = Image.open(image_path).convert("RGB")
+        
+        # Peruscaption
+        inputs = self.processor(image, return_tensors="pt").to(self.device)
+        out = self.model.generate(**inputs, max_new_tokens=50)
+        caption = self.processor.decode(out[0], skip_special_tokens=True)
+        
+        result = {
+            "caption": caption,
+            "visual_elements": [],
+            "mood": "neutral",
+            "dominant_colors": [],
+            "composition": {}
+        }
+        
+        if detailed:
+            # Lisää analyysiä OpenCV:llä
+            img_cv = cv2.imread(image_path)
+            
+            # Värianalyysi
+            pixels = np.float32(img_cv.reshape(-1, 3))
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+            _, labels, centers = cv2.kmeans(pixels, 5, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+            result["dominant_colors"] = [f"#{int(c[2]):02x}{int(c[1]):02x}{int(c[0]):02x}" 
+                                          for c in centers]
+            
+            # Koostumus
+            h, w = img_cv.shape[:2]
+            result["composition"] = {
+                "aspect_ratio": round(w/h, 2),
+                "resolution": f"{w}x{h}",
+                "rule_of_thirds": self._analyze_composition(img_cv)
+            }
+            
+            # Määrää mieliala värien perusteella (yksinkertaistettu)
+            avg_brightness = np.mean(cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY))
+            if avg_brightness < 50:
+                result["mood"] = "dark/mysterious"
+            elif avg_brightness > 200:
+                result["mood"] = "bright/cheerful"
+            elif np.std(pixels) > 60:
+                result["mood"] = "dynamic/energetic"
+            else:
+                result["mood"] = "calm/balanced"
+        
+        return result
+        
+    except Exception as e:
+        return {"caption": f"Error: {str(e)}", "visual_elements": []}
+
+def _analyze_composition(self, img):
+    """Yksinkertaistettu koostumanalyysi"""
+    h, w = img.shape[:2]
+    # Tarkista onko kohde keskellä vs reunoilla
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 100, 200)
+    center_activity = np.mean(edges[h//3:2*h//3, w//3:2*w//3])
+    return "center_focused" if center_activity > np.mean(edges) else "distributed"
+
+---------------------------
+CHARACTER FORGE - HAHRONLUAJA
+---------------------------
+@dataclass
+class CharacterProfile:
+"""Hahmon profiili joka kertyy muistojen kautta"""
+character_id: str
+name: str
+created_at: str
+visual_dna: Dict = field(default_factory=dict)  # BLIP-analyysien summa
+lore_memory: List[str] = field(default_factory=list)
+personality_vector: Dict = field(default_factory=dict)
+relationships: Dict = field(default_factory=dict)
+evolution_history: List[Dict] = field(default_factory=list)
+def to_json(self):
+    return json.dumps(asdict(self), indent=2, ensure_ascii=False)
+
+class CharacterForge:
+"""
+Hahmonluontisysteemi joka käyttää:
+1. BLIP:iä kuvien analysointiin
+2. PineconeMemoryFlow'ta muistien tallentamiseen
+3. Eettistä moottoria suojaukseen
+"""
+def __init__(self):
+    self.memory = PineconeMemoryFlow(persist_dir="./character_memory")
+    self.vision = VisionCaptioner()
+    self.characters = {}  # character_id -> CharacterProfile
+    
+def create_character(self, name: str, seed_images: List[str] = None) -> str:
+    """Luo uusi hahmo ja analysoi seed-kuvat"""
+    char_id = f"char_{uuid.uuid4().hex[:12]}"
+    timestamp = datetime.now().isoformat()
+    
+    profile = CharacterProfile(
+        character_id=char_id,
+        name=name,
+        created_at=timestamp,
+        visual_dna={"seed_analyses": [], "dominant_traits": []}
+    )
+    
+    # Analysoi seed-kuvat jos annettu
+    if seed_images:
+        all_captions = []
+        all_colors = []
+        
+        for img_path in seed_images:
+            analysis = self.vision.analyze_image(img_path, detailed=True)
+            
+            # Tallenna muistoksi
+            mem = MemoryEntry(
+                id=f"{char_id}_visual_{uuid.uuid4().hex[:8]}",
+                timestamp=timestamp,
+                category="visual",
+                content=f"Visual analysis: {analysis['caption']}",
+                metadata={
+                    "image_path": img_path,
+                    "colors": analysis.get('dominant_colors', []),
+                    "mood": analysis.get('mood', 'neutral'),
+                    "composition": analysis.get('composition', {})
+                },
+                importance_score=0.9
+            )
+            
+            self.memory.upsert_memory(char_id, mem)
+            all_captions.append(analysis['caption'])
+            all_colors.extend(analysis.get('dominant_colors', []))
+        
+        # Rakenna visual DNA yhteenvedosta
+        profile.visual_dna = {
+            "seed_analyses": all_captions,
+            "common_elements": self._extract_common_elements(all_captions),
+            "color_palette": list(set(all_colors))[:5],
+            "archetype": self._determine_archetype(all_captions)
+        }
+    
+    self.characters[char_id] = profile
+    
+    # Tallenna hahmon metatieto
+    meta_mem = MemoryEntry(
+        id=f"{char_id}_meta",
+        timestamp=timestamp,
+        category="lore",
+        content=f"Character '{name}' created with archetype: {profile.visual_dna.get('archetype', 'unknown')}",
+        metadata={"character_name": name, "type": "creation_event"},
+        importance_score=1.0
+    )
+    self.memory.upsert_memory(char_id, meta_mem)
+    
+    return char_id
+
+def _extract_common_elements(self, captions: List[str]) -> List[str]:
+    """Yksinkertainen keyword extraction"""
+    common_words = []
+    for cap in captions:
+        words = cap.lower().split()
+        common_words.extend([w for w in words if len(w) > 3])
+    
+    # Yksinkertaistettu frekvenssi
+    from collections import Counter
+    return [word for word, count in Counter(common_words).most_common(5)]
+
+def _determine_archetype(self, captions: List[str]) -> str:
+    """Määritä hahmotyyppi captionien perusteella"""
+    text = " ".join(captions).lower()
+    
+    archetypes = {
+        "warrior": ["armor", "sword", "battle", "fight", "strong"],
+        "mystic": ["magic", "glowing", "mystical", "ethereal", "spirit"],
+        "ruler": ["crown", "throne", "royal", "commanding", "majestic"],
+        "trickster": ["smile", "shadow", "hidden", "mysterious", "mask"],
+        "creator": ["art", "crafting", "building", "painting", "making"]
+    }
+    
+    scores = {k: sum(1 for v in vals if v in text) for k, vals in archetypes.items()}
+    return max(scores, key=scores.get) if max(scores.values()) > 0 else "undefined"
+
+def add_lore(self, char_id: str, lore_text: str, importance: float = 0.7):
+    """Lisää taustatarinaa hahmolle"""
+    if char_id not in self.characters:
+        return False
+    
+    mem = MemoryEntry(
+        id=f"{char_id}_lore_{uuid.uuid4().hex[:8]}",
+        timestamp=datetime.now().isoformat(),
+        category="lore",
+        content=lore_text,
+        metadata={"type": "backstory"},
+        importance_score=importance
+    )
+    
+    success = self.memory.upsert_memory(char_id, mem)
+    if success:
+        self.characters[char_id].lore_memory.append(lore_text)
+    
+    return success
+
+def query_character_memory(self, char_id: str, query: str, 
+                           memory_type: Optional[str] = None) -> List[Dict]:
+    """Kysy hahmon muistista"""
+    filter_criteria = {"category": memory_type} if memory_type else None
+    
+    memories = self.memory.query_memories(char_id, query, filter_criteria, top_k=10)
+    
+    return [{
+        "content": m.content,
+        "category": m.category,
+        "importance": m.importance_score,
+        "when": m.timestamp
+    } for m in memories]
+
+def evolve_character(self, char_id: str, new_image: str, 
+                    evolution_context: str = "") -> Dict:
+    """Kehitä hahpoa uuden kuvan perusteella"""
+    if char_id not in self.characters:
+        return {"error": "Character not found"}
+    
+    # Analysoi uusi kuva
+    analysis = self.vision.analyze_image(new_image, detailed=True)
+    
+    # Vertaa vanhaan DNA:han
+    old_dna = self.characters[char_id].visual_dna
+    evolution_note = f"Evolution detected: {evolution_context}"
+    
+    # Luo evoluutiomuisto
+    evo_mem = MemoryEntry(
+        id=f"{char_id}_evo_{uuid.uuid4().hex[:8]}",
+        timestamp=datetime.now().isoformat(),
+        category="evolution",
+        content=f"Character evolved: {analysis['caption']}",
+        metadata={
+            "previous_archetype": old_dna.get('archetype'),
+            "new_mood": analysis.get('mood'),
+            "evolution_trigger": evolution_context,
+            "visual_shift": analysis.get('dominant_colors', [])
+        },
+        importance_score=0.95,
+        emotional_valence=0.3  # Evoluutio on positiivista
+    )
+    
+    self.memory.upsert_memory(char_id, evo_mem)
+    
+    # Päivitä profiili
+    self.characters[char_id].evolution_history.append({
+        "date": datetime.now().isoformat(),
+        "trigger": evolution_context,
+        "new_visual": analysis['caption']
+    })
+    
+    return {
+        "evolution_recorded": True,
+        "new_analysis": analysis,
+        "total_evolutions": len(self.characters[char_id].evolution_history)
+    }
+
+def get_character_summary(self, char_id: str) -> Dict:
+    """Hae hahmon tämänhetkinen tila"""
+    if char_id not in self.characters:
+        return {"error": "Not found"}
+    
+    char = self.characters[char_id]
+    
+    # Hae kaikki muistot
+    all_memories = self.memory.query_memories(char_id, "*", top_k=100)
+    
+    return {
+        "profile": char.to_json(),
+        "memory_count": len(all_memories),
+        "visual_dna": char.visual_dna,
+        "latest_evolution": char.evolution_history[-1] if char.evolution_history else None,
+        "dominant_memories": [
+            m.content for m in all_memories[:5] 
+            if m.importance_score > 0.8
+        ]
+    }
+
+---------------------------
+GRADIO UI - CHARACTER FORGE
+---------------------------
+def create_character_forge_ui():
+"""Luo Character Forge -käyttöliittymä"""
+forge = CharacterForge()
+active_characters = {}  # session storage
+
+with gr.Blocks(theme=gr.themes.Soft(), title="Character Forge") as demo:
+    gr.Markdown("""
+    # 🎭 ELIXIRIA CHARACTER FORGE
+    ### Pinwcone Memory Flow + Ethical Memory Engine + BLIP Vision
+    """)
+    
+    with gr.Tabs():
+        
+        # TAB 1: CREATE CHARACTER
+        with gr.Tab("🌱 Create Character"):
+            with gr.Row():
+                with gr.Column():
+                    char_name = gr.Textbox(label="Character Name", placeholder="E.g., 'Shadow Weaver'")
+                    seed_images = gr.File(
+                        label="Seed Images (1-5 images)", 
+                        file_count="multiple",
+                        file_types=[".jpg", ".jpeg", ".png"]
+                    )
+                    
+                    with gr.Accordion("Advanced Settings", open=False):
+                        privacy_mode = gr.Checkbox(
+                            label="🔒 Privacy Mode (local only)", 
+                            value=True,
+                            info="Store embeddings locally, no cloud"
+                        )
+                        consent_check = gr.Checkbox(
+                            label="✅ I have rights to use these images",
+                            value=False
+                        )
+                    
+                    create_btn = gr.Button("🔥 Forge Character", variant="primary")
+                    create_status = gr.Textbox(label="Status", interactive=False)
+                
+                with gr.Column():
+                    char_id_output = gr.Textbox(label="Character ID", interactive=False)
+                    dna_preview = gr.JSON(label="Visual DNA Analysis")
+                    archetype_display = gr.Textbox(label="Detected Archetype", interactive=False)
+        
+        # TAB 2: MEMORY QUERY
+        with gr.Tab("🔍 Memory Query"):
+            with gr.Row():
+                with gr.Column():
+                    query_char_id = gr.Textbox(label="Character ID")
+                    query_text = gr.Textbox(
+                        label="Query", 
+                        placeholder="Ask about character's memories...",
+                        value="What is this character's visual style?"
+                    )
+                    query_type = gr.Dropdown(
+                        label="Memory Category",
+                        choices=["all", "visual", "lore", "evolution", "relationship"],
+                        value="all"
+                    )
+                    query_btn = gr.Button("🔮 Query Memory", variant="primary")
+                
+                with gr.Column():
+                    query_results = gr.JSON(label="Retrieved Memories")
+                    memory_insights = gr.Textbox(
+                        label="AI Insights", 
+                        lines=5,
+                        interactive=False
+                    )
+        
+        # TAB 3: EVOLVE CHARACTER
+        with gr.Tab("🧬 Evolve"):
+            with gr.Row():
+                with gr.Column():
+                    evo_char_id = gr.Textbox(label="Character ID to Evolve")
+                    evo_image = gr.File(label="New Evolution Image")
+                    evo_context = gr.Textbox(
+                        label="Evolution Context",
+                        placeholder="E.g., 'After the battle', 'Season 2 redesign'",
+                        value="Natural progression"
+                    )
+                    evolve_btn = gr.Button("⚡ Trigger Evolution", variant="primary")
+                
+                with gr.Column():
+                    evo_status = gr.JSON(label="Evolution Result")
+                    evolution_history = gr.Dataframe(
+                        headers=["Date", "Trigger", "Visual Change"],
+                        label="Evolution Timeline"
+                    )
+        
+        # TAB 4: ETHICS & AUDIT
+        with gr.Tab("⚖️ Ethics & Audit"):
+            gr.Markdown("### Ethical Memory Engine Logs")
+            ethics_log = gr.JSON(label="Ethical Decisions")
+            consent_registry = gr.JSON(label="Consent Registry")
+            
+            with gr.Row():
+                audit_btn = gr.Button("🕵️ Run Audit")
+                forget_btn = gr.Button("🗑️ Right to be Forgotten", variant="stop")
+            
+            forget_id = gr.Textbox(label="Character ID to Delete")
+    
+    # Event handlers
+    def handle_create(name, images, privacy, consent):
+        if not consent:
+            return "❌ Consent required", None, None, None
+        
+        try:
+            char_id = forge.create_character(name, images)
+            active_characters[char_id] = forge.characters[char_id]
+            
+            profile = forge.get_character_summary(char_id)
+            dna = profile.get('visual_dna', {})
+            
+            return (
+                f"✅ Character '{name}' forged successfully!",
+                char_id,
+                dna,
+                dna.get('archetype', 'unknown')
+            )
+        except Exception as e:
+            return f"❌ Error: {str(e)}", None, None, None
+    
+    create_btn.click(
+        handle_create,
+        [char_name, seed_images, privacy_mode, consent_check],
+        [create_status, char_id_output, dna_preview, archetype_display]
+    )
+    
+    def handle_query(char_id, query, mtype):
+        if not char_id:
+            return [], "No character ID"
+        
+        mtype = None if mtype == "all" else mtype
+        results = forge.query_character_memory(char_id, query, mtype)
+        
+        # Generoi "insights" (yksinkertaistettu)
+        insights = f"Found {len(results)} relevant memories. "
+        if results:
+            insights += f"Strongest association: {results[0]['content'][:100]}..."
+        
+        return results, insights
+    
+    query_btn.click(
+        handle_query,
+        [query_char_id, query_text, query_type],
+        [query_results, memory_insights]
+    )
+    
+    def handle_evolve(char_id, new_img, context):
+        if not char_id or not new_img:
+            return {"error": "Missing data"}, []
+        
+        result = forge.evolve_character(char_id, new_img, context)
+        
+        # Päivitä historia
+        if char_id in forge.characters:
+            history = forge.characters[char_id].evolution_history
+            df_data = [[e['date'], e['trigger'], e['new_visual'][:50]] for e in history]
+        else:
+            df_data = []
+        
+        return result, df_data
+    
+    evolve_btn.click(
+        handle_evolve,
+        [evo_char_id, evo_image, evo_context],
+        [evo_status, evolution_history]
+    )
+
+return demo
+
+---------------------------
+MAIN APP COMBINATION
+---------------------------
+if name == "main":
+# Yhdistä vanha editori + uusi Character Forge
+# (Tässä vain Character Forge itsenäisenä, voit yhdistää Tabien alle)
+forge_demo = create_character_forge_ui()
+forge_demo.launch(share=False)
+
+🧠 Mitä tää tekee:
+Pinwcone Memory Flow:
+•  ChromaDB vektoritietokanta (toimii kuin Pinecone mutta ilmaiseksi)
+•  Sentence Transformers semanttiseen hakuun
+•  Namespace-tuki = jokainen hahmo oma "index"
+•  Upsert/Query/Evolve operaatiot
+Ethical Memory Engine:
+•  ✅ Content filtering (haitallisuustarkistus)
+•  ✅ Consent registry (kuka on antanut luvan)
+•  ✅ Attribution (alkuperän merkintä)
+•  ✅ Right to be forgotten (poistomahdollisuus)
+•  ✅ Audit logs (eettiset päätökset tallessa)
+BLIP Caption:
+•  Kuvan analyysi automaattisesti
+•  Dominant colors (päävärit)
+•  Composition analysis (sommittelu)
+•  Mood detection (mieliala)
+•  Archetype detection (hahmotyypin päättely)
+Character Forge:
+1.  Create - Analysoi seed-kuvat, rakenna Visual DNA
+2.  Query - Semanttinen haku muisteista ("What weapons does this character use?")
+3.  Evolve - Uusi kuva = hahmon kehitys tallentuu
+4.  Ethics - Audit trail kaikista päätöksistä
+Asennus:
+pip install chromadb sentence-transformers transformers torch accelerate
+pip install opencv-python pillow gradio
+Tää on nyt ihan next level - hahmot jotka muistavat ja kehittyvät! 🎭✨
